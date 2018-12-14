@@ -217,8 +217,6 @@ func (tx *Tx) StmtxContext(ctx context.Context, stmt interface{}) *Stmt {
 		s = v.Stmt
 	case *Stmt:
 		s = v.Stmt
-	case sql.Stmt:
-		s = &v
 	case *sql.Stmt:
 		s = v
 	default:
@@ -237,10 +235,59 @@ func (tx *Tx) NamedStmtContext(ctx context.Context, stmt *NamedStmt) *NamedStmt 
 	}
 }
 
+// PreparexContext returns an sqlx.Stmt instead of a sql.Stmt.
+//
+// The provided context is used for the preparation of the statement, not for
+// the execution of the statement.
+func (tx *Tx) PreparexContext(ctx context.Context, query string) (*Stmt, error) {
+	return PreparexContext(ctx, tx, query)
+}
+
+// PrepareNamedContext returns an sqlx.NamedStmt
+func (tx *Tx) PrepareNamedContext(ctx context.Context, query string) (*NamedStmt, error) {
+	return prepareNamedContext(ctx, tx, query)
+}
+
 // MustExecContext runs MustExecContext within a transaction.
 // Any placeholder parameters are replaced with supplied args.
 func (tx *Tx) MustExecContext(ctx context.Context, query string, args ...interface{}) sql.Result {
 	return MustExecContext(ctx, tx, query, args...)
+}
+
+// QueryxContext within a transaction and context.
+// Any placeholder parameters are replaced with supplied args.
+func (tx *Tx) QueryxContext(ctx context.Context, query string, args ...interface{}) (*Rows, error) {
+	r, err := tx.Tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return &Rows{Rows: r, unsafe: tx.unsafe, Mapper: tx.Mapper}, err
+}
+
+// SelectContext within a transaction and context.
+// Any placeholder parameters are replaced with supplied args.
+func (tx *Tx) SelectContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+	return SelectContext(ctx, tx, dest, query, args...)
+}
+
+// GetContext within a transaction and context.
+// Any placeholder parameters are replaced with supplied args.
+// An error is returned if the result set is empty.
+func (tx *Tx) GetContext(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+	return GetContext(ctx, tx, dest, query, args...)
+}
+
+// QueryRowxContext within a transaction and context.
+// Any placeholder parameters are replaced with supplied args.
+func (tx *Tx) QueryRowxContext(ctx context.Context, query string, args ...interface{}) *Row {
+	rows, err := tx.Tx.QueryContext(ctx, query, args...)
+	return &Row{rows: rows, err: err, unsafe: tx.unsafe, Mapper: tx.Mapper}
+}
+
+// NamedExecContext using this Tx.
+// Any named placeholder parameters are replaced with fields from arg.
+func (tx *Tx) NamedExecContext(ctx context.Context, query string, arg interface{}) (sql.Result, error) {
+	return NamedExecContext(ctx, tx, query, arg)
 }
 
 // SelectContext using the prepared statement.
