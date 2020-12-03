@@ -210,36 +210,41 @@ func bindStruct(bindType int, query string, arg interface{}, m *reflectx.Mapper)
 	return bound, arglist, nil
 }
 
-var (
-	EndBracketsReg = regexp.MustCompile(`\([^()]*\)\s*$`)
-)
+var valueBracketReg = regexp.MustCompile(`\([^(]*\?+[^)]*\)`)
 
 func fixBound(bound string, loop int) string {
-	endBrackets := EndBracketsReg.FindString(bound)
-	if endBrackets == "" {
+	loc := valueBracketReg.FindStringIndex(bound)
+	if len(loc) != 2 {
 		return bound
 	}
 	var buffer bytes.Buffer
-	buffer.WriteString(bound)
+
+	buffer.WriteString(bound[0:loc[1]])
 	for i := 0; i < loop-1; i++ {
 		buffer.WriteString(",")
-		buffer.WriteString(endBrackets)
+		buffer.WriteString(bound[loc[0]:loc[1]])
 	}
+	buffer.WriteString(bound[loc[1]:])
 	return buffer.String()
 }
 
 // bindArray binds a named parameter query with fields from an array or slice of
 // structs argument.
 func bindArray(bindType int, query string, arg interface{}, m *reflectx.Mapper) (string, []interface{}, error) {
-	bound, names, err := compileNamedQuery([]byte(query), bindType)
+	// do the initial binding with QUESTION;  if bindType is not question,
+	// we can rebind it at the end.
+	bound, names, err := compileNamedQuery([]byte(query), QUESTION)
 	if err != nil {
 		return "", []interface{}{}, err
 	}
 	arrayValue := reflect.ValueOf(arg)
 	arrayLen := arrayValue.Len()
-	var arglist []interface{}
+	if arrayLen == 0 {
+		return "", []interface{}{}, fmt.Errorf("length of array is 0: %#v", arg)
+	}
+	var arglist = make([]interface{}, 0, len(names)*arrayLen)
 	for i := 0; i < arrayLen; i++ {
-		elemArglist, err := bindArgs(names, arrayValue.Index(i).Interface(), m)
+		elemArglist, err := bindAnyArgs(names, arrayValue.Index(i).Interface(), m)
 		if err != nil {
 			return "", []interface{}{}, err
 		}
@@ -247,6 +252,10 @@ func bindArray(bindType int, query string, arg interface{}, m *reflectx.Mapper) 
 	}
 	if arrayLen > 1 {
 		bound = fixBound(bound, arrayLen)
+	}
+	// adjust binding type if we weren't on question
+	if bindType != QUESTION {
+		bound = Rebind(bindType, bound)
 	}
 	return bound, arglist, nil
 }
@@ -302,7 +311,7 @@ func compileNamedQuery(qs []byte, bindType int) (query string, names []string, e
 			}
 			inName = true
 			name = []byte{}
-		} else if inName && i > 0 && b == '=' {
+		} else if inName && i > 0 && b == '=' && len(name) == 0 {
 			rebound = append(rebound, ':', '=')
 			inName = false
 			continue
@@ -370,11 +379,12 @@ func Named(query string, arg interface{}) (string, []interface{}, error) {
 }
 
 func bindNamedMapper(bindType int, query string, arg interface{}, m *reflectx.Mapper) (string, []interface{}, error) {
-	if maparg, ok := arg.(map[string]interface{}); ok {
-		return bindMap(bindType, query, maparg)
-	}
-	switch reflect.TypeOf(arg).Kind() {
-	case reflect.Array, reflect.Slice:
+	t := reflect.TypeOf(arg)
+	k := t.Kind()
+	switch {
+	case k == reflect.Map && t.Key().Kind() == reflect.String:
+		return bindMap(bindType, query, arg.(map[string]interface{}))
+	case k == reflect.Array || k == reflect.Slice:
 		return bindArray(bindType, query, arg, m)
 	default:
 		return bindStruct(bindType, query, arg, m)
@@ -394,7 +404,7 @@ func NamedQuery(e Ext, query string, arg interface{}) (*Rows, error) {
 
 // NamedExec uses BindStruct to get a query executable by the driver and
 // then runs Exec on the result.  Returns an error from the binding
-// or the query excution itself.
+// or the query execution itself.
 func NamedExec(e Ext, query string, arg interface{}) (sql.Result, error) {
 	q, args, err := bindNamedMapper(BindType(e.DriverName()), query, arg, mapperFor(e))
 	if err != nil {
